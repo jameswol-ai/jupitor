@@ -1,126 +1,165 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Solana Portfolio Risk Analyzer</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #0a0a1a; color: #e0e0e0; margin: 20px; }
-        .container { max-width: 1200px; margin: auto; }
-        .card { background: rgba(255,255,255,0.06); backdrop-filter: blur(12px); border-radius: 16px; padding: 20px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.1); }
-        label, input, select, button { color: #fff; }
-        input, select { background: #1e1e2f; border: 1px solid #333; padding: 8px; border-radius: 6px; }
-        button { background: linear-gradient(45deg, #ff416c, #ff4b2b); border: none; padding: 12px 28px; border-radius: 50px; cursor: pointer; font-weight: bold; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 10px; border-bottom: 1px solid #333; text-align: right; }
-        .risk-high { color: #F44336; } .risk-medium { color: #FF9800; } .risk-low { color: #4CAF50; }
-        .metric { background: rgba(255,255,255,0.1); border-radius: 10px; padding: 15px; text-align: center; margin: 10px 0; }
-        .metrics-row { display: flex; justify-content: space-between; gap: 10px; }
-    </style>
-</head>
-<body>
-<div class="container">
-    <h1>🪐 Jupiter Solana Portfolio Risk Analyzer</h1>
+from flask import Flask, render_template, request
+import pandas as pd
+import requests
+import plotly.express as px
+import json
+import plotly.utils
 
-    <form method="POST">
-        <div class="card">
-            <label>Jupiter API Key (optional):</label>
-            <input type="password" name="jup_api_key" value="{{ api_key }}">
-        </div>
+# Template folder is one level up (project root/templates)
+app = Flask(__name__, template_folder='../templates')
 
-        <div class="card">
-            <label>Input Method:</label>
-            <select name="mode" onchange="this.form.submit()">
-                <option value="manual" {% if mode == 'manual' %}selected{% endif %}>Manual Entry</option>
-                <option value="wallet" {% if mode == 'wallet' %}selected{% endif %}>Wallet Import (Simulation)</option>
-            </select>
-        </div>
+# --- CURATED SOLANA TOKENS (unchanged) ---
+DEFAULT_TOKENS = {
+    "Solana (SOL)": {"mint": "So11111111111111111111111111111111111111112", "risk": "Low", "price_default": 140.0, "type": "Native L1"},
+    "USD Coin (USDC)": {"mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "risk": "Low", "price_default": 1.0, "type": "Stablecoin"},
+    "Tether (USDT)": {"mint": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "risk": "Low", "price_default": 1.0, "type": "Stablecoin"},
+    "Jupiter (JUP)": {"mint": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", "risk": "Medium", "price_default": 0.95, "type": "DeFi Utility"},
+    "Pyth Network (PYTH)": {"mint": "HZ1JbNs2ST4wwE7as979mJ6Y8XFR3EnZ5Rdf8S6ZfLNp", "risk": "Medium", "price_default": 0.35, "type": "Oracle / Infra"},
+    "Jito (JTO)": {"mint": "jtojtome5kxvXzKSpRndmcg9fK5S8fBfD8LscV3N5K6", "risk": "Medium", "price_default": 2.20, "type": "Liquid Staking"},
+    "Dogwifhat (WIF)": {"mint": "EKpQGSJmg823YEV4L6p3W5ij37mN2Y8SmW91mZ366xoV", "risk": "High", "price_default": 2.50, "type": "Memecoin"},
+    "Bonk (BONK)": {"mint": "DezXAZ8z7PnrFcPyg7GRt6R3G338gMt858H8VXHzpHqg", "risk": "High", "price_default": 0.000022, "type": "Memecoin"},
+    "Popcat (POPCAT)": {"mint": "7GCih6b9GMSr0979L6vvwY6Y3089mZ366xoV56Y8xoV", "risk": "High", "price_default": 1.10, "type": "Memecoin"}
+}
 
-        {% if mode == 'manual' %}
-        <div class="card">
-            <h3>Select Assets and Balances</h3>
-            {% for name, data in tokens.items() %}
-            <div style="margin-bottom:10px;">
-                <label>
-                    <input type="checkbox" name="token" value="{{ name }}"
-                           {% if name in ["Solana (SOL)", "USD Coin (USDC)"] %}checked{% endif %}>
-                    {{ name }}
-                </label>
-                <input type="number" step="0.001" name="amount_{{ name }}" placeholder="Amount" style="margin-left:20px;"
-                       value="{% if name in ["Solana (SOL)", "USD Coin (USDC)"] %}10{% else %}0{% endif %}">
-            </div>
-            {% endfor %}
-        </div>
-        {% elif mode == 'wallet' %}
-        <div class="card">
-            <label>Wallet Address:</label>
-            <input type="text" name="wallet_address" value="7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU" style="width:400px;">
-            <p style="font-size:0.8em;">Simulated wallet with pre‑loaded balances.</p>
-        </div>
-        {% endif %}
+SIMULATED_WALLET = {
+    "Solana (SOL)": 500.0,
+    "USD Coin (USDC)": 15000.0,
+    "Jupiter (JUP)": 8000.0,
+    "Pyth Network (PYTH)": 4000.0,
+    "Dogwifhat (WIF)": 150.0
+}
 
-        <button type="submit">Analyze Portfolio</button>
-    </form>
+def fetch_prices(api_key=None):
+    prices = {}
+    for name, data in DEFAULT_TOKENS.items():
+        prices[name] = data["price_default"]
+    if api_key:
+        try:
+            mints = [data["mint"] for data in DEFAULT_TOKENS.values()]
+            url = f"https://api.jup.ag/price/v3?ids={','.join(mints)}"
+            headers = {"x-api-key": api_key}
+            resp = requests.get(url, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()["data"]
+                mint_to_name = {v["mint"]: k for k, v in DEFAULT_TOKENS.items()}
+                for mint, token_data in data.items():
+                    if token_data and "price" in token_data:
+                        name = mint_to_name.get(mint)
+                        if name:
+                            prices[name] = float(token_data["price"])
+        except:
+            pass
+    return prices
 
-    {% if error %}
-    <div class="card" style="color:#F44336;">{{ error }}</div>
-    {% endif %}
+def generate_insights(risk_score, low_pct, med_pct, high_pct):
+    if risk_score > 7.0:
+        return (
+            "⚠️ **Aggressive Risk Exposure Detected**\n\n"
+            "- **De-risk into Core Assets:** ...\n"
+            "- **Set Stop-Losses:** ...\n"
+            "- **Yield Opportunities:** ..."
+        )
+    elif risk_score > 4.0:
+        return (
+            "⚖️ **Balanced Growth Portfolio**\n\n"
+            "- **Optimized Ecosystem Allocation:** ...\n"
+            "- **Rebalancing Strategy:** ...\n"
+            "- **Governance Engagement:** ..."
+        )
+    else:
+        return (
+            "🛡️ **Conservative / Defensive Allocation**\n\n"
+            "- **Capital Preservation Focus:** ...\n"
+            "- **Liquidity Optimization:** ...\n"
+            "- **Strategic Allocation:** ..."
+        )
 
-    {% if results %}
-    <div class="metrics-row">
-        <div class="metric">
-            <div>Total Value</div>
-            <div style="font-size:1.5em;">${{ "{:,.2f}".format(results.total_val) }}</div>
-        </div>
-        <div class="metric">
-            <div>Risk Score</div>
-            <div style="font-size:1.5em;" class="{% if results.risk_score > 7 %}risk-high{% elif results.risk_score > 4 %}risk-medium{% else %}risk-low{% endif %}">
-                {{ results.risk_score }}/10 {{ results.risk_label }}
-            </div>
-        </div>
-        <div class="metric">
-            <div>Largest Holding</div>
-            <div style="font-size:1.5em;">{{ results.largest_holding }}</div>
-        </div>
-        <div class="metric">
-            <div>Assets Tracked</div>
-            <div style="font-size:1.5em;">{{ results.assets_count }}</div>
-        </div>
-    </div>
+@app.route("/", methods=["GET", "POST"])
+def index():
+    portfolio_items = []
+    results = None
+    error = None
+    api_key = request.form.get("jup_api_key", "").strip()
+    mode = request.form.get("mode", "manual")
 
-    <div class="card">
-        <div id="chart_assets"></div>
-        <script>var chart = {{ results.chart_assets | safe }}; Plotly.newPlot('chart_assets', chart.data, chart.layout);</script>
-    </div>
+    prices = fetch_prices(api_key if api_key else None)
 
-    <div class="card">
-        <div id="chart_risk"></div>
-        <script>var chart2 = {{ results.chart_risk | safe }}; Plotly.newPlot('chart_risk', chart2.data, chart2.layout);</script>
-    </div>
+    if request.method == "POST":
+        if mode == "manual":
+            selected_tokens = request.form.getlist("token")
+            amounts = {}
+            for token in selected_tokens:
+                amt_str = request.form.get(f"amount_{token}", "0")
+                try:
+                    amount = float(amt_str)
+                except:
+                    amount = 0.0
+                if amount > 0:
+                    price = prices.get(token, DEFAULT_TOKENS[token]["price_default"])
+                    portfolio_items.append({
+                        "Token": token,
+                        "Amount": amount,
+                        "Price (USD)": price,
+                        "Value (USD)": amount * price,
+                        "Risk Profile": DEFAULT_TOKENS[token]["risk"],
+                        "Type": DEFAULT_TOKENS[token]["type"]
+                    })
+        elif mode == "wallet":
+            wallet = request.form.get("wallet_address", "")
+            if wallet:
+                for token, amount in SIMULATED_WALLET.items():
+                    price = prices.get(token, DEFAULT_TOKENS[token]["price_default"])
+                    portfolio_items.append({
+                        "Token": token,
+                        "Amount": amount,
+                        "Price (USD)": price,
+                        "Value (USD)": amount * price,
+                        "Risk Profile": DEFAULT_TOKENS[token]["risk"],
+                        "Type": DEFAULT_TOKENS[token]["type"]
+                    })
+            else:
+                error = "Please enter a wallet address."
 
-    <div class="card">
-        <h3>Asset Breakdown</h3>
-        <table>
-            <tr><th>Token</th><th>Type</th><th>Amount</th><th>Price</th><th>Value</th><th>Allocation</th><th>Risk</th></tr>
-            {% for row in results.table_data %}
-            <tr>
-                <td>{{ row.Token }}</td>
-                <td>{{ row.Type }}</td>
-                <td>{{ row.Amount }}</td>
-                <td>${{ "{:,.4f}".format(row["Price (USD)"]) }}</td>
-                <td>${{ "{:,.2f}".format(row["Value (USD)"]) }}</td>
-                <td>{{ "{:.2f}".format(row["Allocation (%)"]) }}%</td>
-                <td class="{% if row['Risk Profile'] == 'High' %}risk-high{% elif row['Risk Profile'] == 'Medium' %}risk-medium{% else %}risk-low{% endif %}">{{ row['Risk Profile'] }}</td>
-            </tr>
-            {% endfor %}
-        </table>
-    </div>
+        if portfolio_items:
+            df = pd.DataFrame(portfolio_items)
+            total_val = df["Value (USD)"].sum()
+            df["Allocation (%)"] = (df["Value (USD)"] / total_val) * 100
 
-    <div class="card">
-        <h3>🤖 Smart Portfolio Advisor Insights</h3>
-        <div style="white-space: pre-line;">{{ results.insights }}</div>
-    </div>
-    {% endif %}
-</div>
-</body>
-</html>
+            low_pct = df[df['Risk Profile'] == 'Low']['Allocation (%)'].sum()
+            med_pct = df[df['Risk Profile'] == 'Medium']['Allocation (%)'].sum()
+            high_pct = df[df['Risk Profile'] == 'High']['Allocation (%)'].sum()
+            risk_score = (low_pct * 1 + med_pct * 5 + high_pct * 10) / 10
+
+            fig_assets = px.pie(df, values='Value (USD)', names='Token', hole=0.4,
+                                color_discrete_sequence=px.colors.sequential.Agsunset)
+            chart_assets = json.dumps(fig_assets, cls=plotly.utils.PlotlyJSONEncoder)
+
+            risk_grouped = df.groupby('Risk Profile').sum(numeric_only=True).reset_index()
+            fig_risk = px.bar(risk_grouped, x='Risk Profile', y='Value (USD)', color='Risk Profile',
+                              color_discrete_map={'Low': '#4CAF50', 'Medium': '#FF9800', 'High': '#F44336'},
+                              category_orders={'Risk Profile': ['Low', 'Medium', 'High']})
+            chart_risk = json.dumps(fig_risk, cls=plotly.utils.PlotlyJSONEncoder)
+
+            insights = generate_insights(risk_score, low_pct, med_pct, high_pct)
+            table_data = df.to_dict(orient='records')
+
+            results = {
+                "total_val": total_val,
+                "risk_score": risk_score,
+                "risk_label": ("High Risk 🔥" if risk_score > 7 else "Moderate Risk ⚖️" if risk_score > 4 else "Low Risk 🛡️"),
+                "largest_holding": df.loc[df['Value (USD)'].idxmax()]['Token'].split(' ')[0],
+                "assets_count": len(df),
+                "chart_assets": chart_assets,
+                "chart_risk": chart_risk,
+                "table_data": table_data,
+                "insights": insights
+            }
+
+    return render_template("index.html",
+                           tokens=DEFAULT_TOKENS,
+                           results=results,
+                           error=error,
+                           api_key=api_key,
+                           mode=mode)
+
+# Vercel requires the Flask app to be exposed as 'app' (already the case)
