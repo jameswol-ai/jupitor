@@ -1,19 +1,14 @@
-import streamlit as st
+from flask import Flask, render_template, request
 import pandas as pd
 import requests
 import plotly.express as px
 import plotly.graph_objects as go
+import json
+import plotly.utils
 
-# Page configuration
-st.set_page_config(
-    page_title="Solana Portfolio Risk Analyzer",
-    page_icon="🪐",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+app = Flask(__name__)
 
-# --- CURATED SOLANA TOKENS (Fallback database) ---
-# Keeping a curated list guarantees the app functions immediately without needing an API key.
+# --- CURATED SOLANA TOKENS (same as before) ---
 DEFAULT_TOKENS = {
     "Solana (SOL)": {"mint": "So11111111111111111111111111111111111111112", "risk": "Low", "price_default": 140.0, "type": "Native L1"},
     "USD Coin (USDC)": {"mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "risk": "Low", "price_default": 1.0, "type": "Stablecoin"},
@@ -26,78 +21,41 @@ DEFAULT_TOKENS = {
     "Popcat (POPCAT)": {"mint": "7GCih6b9GMSr0979L6vvwY6Y3089mZ366xoV56Y8xoV", "risk": "High", "price_default": 1.10, "type": "Memecoin"}
 }
 
-# --- UTILITY FUNCTIONS ---
+# Simulated wallet balances (same as before)
+SIMULATED_WALLET = {
+    "Solana (SOL)": 500.0,
+    "USD Coin (USDC)": 15000.0,
+    "Jupiter (JUP)": 8000.0,
+    "Pyth Network (PYTH)": 4000.0,
+    "Dogwifhat (WIF)": 150.0
+}
 
-@st.cache_data(ttl=300)
-def fetch_jupiter_prices(mints, api_key=None):
-    """
-    Attempts to fetch live token prices from the Jupiter Price API.
-    If no API key is set, it falls back to default values.
-    """
+def fetch_prices(api_key=None):
+    """Fetch live prices or fallback to defaults."""
     prices = {}
-
-    # Pre-populate with defaults
     for name, data in DEFAULT_TOKENS.items():
-        prices[data["mint"]] = data["price_default"]
+        prices[name] = data["price_default"]  # using token name as key for simplicity
 
-    if not api_key:
-        return prices
-
-    try:
-        url = f"https://api.jup.ag/price/v3?ids={','.join(mints)}"
-        headers = {"x-api-key": api_key}
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            data = response.json().get("data", {})
-            for mint, token_data in data.items():
-                if token_data and "price" in token_data:
-                    prices[mint] = float(token_data["price"])
-    except Exception as e:
-        st.sidebar.warning("Failed to fetch live prices. Falling back to default baseline values.")
-
+    if api_key:
+        try:
+            mints = [data["mint"] for data in DEFAULT_TOKENS.values()]
+            url = f"https://api.jup.ag/price/v3?ids={','.join(mints)}"
+            headers = {"x-api-key": api_key}
+            resp = requests.get(url, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()["data"]
+                mint_to_name = {v["mint"]: k for k, v in DEFAULT_TOKENS.items()}
+                for mint, token_data in data.items():
+                    if token_data and "price" in token_data:
+                        name = mint_to_name.get(mint)
+                        if name:
+                            prices[name] = float(token_data["price"])
+        except:
+            pass
     return prices
 
-def generate_ai_insights(portfolio_df, openrouter_key=None):
-    """
-    Generates tailored advice based on the risk composition.
-    Uses real LLM integration if OpenRouter Key is configured, otherwise fallback to deterministic system.
-    """
-    low_pct = portfolio_df[portfolio_df['Risk Profile'] == 'Low']['Allocation (%)'].sum()
-    med_pct = portfolio_df[portfolio_df['Risk Profile'] == 'Medium']['Allocation (%)'].sum()
-    high_pct = portfolio_df[portfolio_df['Risk Profile'] == 'High']['Allocation (%)'].sum()
-
-    # Calculate weighted risk score (0-100 scale)
-    risk_score = (low_pct * 1 + med_pct * 5 + high_pct * 10) / 10
-
-    if openrouter_key:
-        try:
-            # Structuring payload for OpenRouter
-            prompt = (
-                f"Act as an expert Solana Web3 Portfolio Advisor. Analyze this portfolio composition: "
-                f"Low Risk (stables/SOL): {low_pct:.1f}%, "
-                f"Medium Risk (utility alts): {med_pct:.1f}%, "
-                f"High Risk (memecoins/microcaps): {high_pct:.1f}%. "
-                f"The aggregate risk score is {risk_score:.1f}/10. "
-                f"Provide 3 actionable risk mitigation or restructuring tips specific to the Solana ecosystem in a clean bullet format."
-            )
-            response = requests.post(
-                url="https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {openrouter_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "google/gemini-2.5-flash",
-                    "messages": [{"role": "user", "content": prompt}]
-                },
-                timeout=10
-            )
-            if response.status_code == 200:
-                return response.json()['choices'][0]['message']['content']
-        except Exception:
-            pass
-
-    # Deterministic fallback insights
+def generate_insights(risk_score, low_pct, med_pct, high_pct):
+    """Deterministic fallback insights (LLM optional)."""
     if risk_score > 7.0:
         return (
             "⚠️ **Aggressive Risk Exposure Detected**\n\n"
@@ -120,156 +78,101 @@ def generate_ai_insights(portfolio_df, openrouter_key=None):
             "- **Strategic Allocation:** If your risk appetite permits, allocate a small percentage (2-5%) to core Solana ecosystem infrastructure protocols to gain exposure to decentralized network growth."
         )
 
-# --- SIDEBAR CONFIGURATION ---
-st.sidebar.title("🪐 Jupiter Analyzer Config")
-st.sidebar.markdown("Configure external integrations for live data & deeper intelligence.")
+@app.route("/", methods=["GET", "POST"])
+def index():
+    # Default values
+    portfolio_items = []
+    results = None
+    error = None
+    api_key = request.form.get("jup_api_key", "").strip()
+    mode = request.form.get("mode", "manual")
 
-# API Key inputs
-jup_api_key = st.sidebar.text_input("Jupiter Developer API Key (Optional)", type="password", help="Enables live pricing via Jupiter V3 API")
-openrouter_key = st.sidebar.text_input("OpenRouter API Key (Optional)", type="password", help="Enables customized LLM insights via OpenRouter models")
+    # Fetch prices
+    prices = fetch_prices(api_key if api_key else None)
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🛠️ Input Method")
-app_mode = st.sidebar.radio("Choose how to load your portfolio:", ["Manual Entry", "Wallet Import (Simulation)"])
+    if request.method == "POST":
+        if mode == "manual":
+            selected_tokens = request.form.getlist("token")
+            amounts = {}
+            for token in selected_tokens:
+                amt_str = request.form.get(f"amount_{token}", "0")
+                try:
+                    amount = float(amt_str)
+                except:
+                    amount = 0.0
+                if amount > 0:
+                    price = prices.get(token, DEFAULT_TOKENS[token]["price_default"])
+                    portfolio_items.append({
+                        "Token": token,
+                        "Amount": amount,
+                        "Price (USD)": price,
+                        "Value (USD)": amount * price,
+                        "Risk Profile": DEFAULT_TOKENS[token]["risk"],
+                        "Type": DEFAULT_TOKENS[token]["type"]
+                    })
+        elif mode == "wallet":
+            wallet = request.form.get("wallet_address", "")
+            if wallet:
+                # Use simulated wallet
+                for token, amount in SIMULATED_WALLET.items():
+                    price = prices.get(token, DEFAULT_TOKENS[token]["price_default"])
+                    portfolio_items.append({
+                        "Token": token,
+                        "Amount": amount,
+                        "Price (USD)": price,
+                        "Value (USD)": amount * price,
+                        "Risk Profile": DEFAULT_TOKENS[token]["risk"],
+                        "Type": DEFAULT_TOKENS[token]["type"]
+                    })
+            else:
+                error = "Please enter a wallet address."
 
-# --- MAIN APP LOGIC ---
-st.title("🪐 Jupiter Solana Portfolio Risk Analyzer")
-st.markdown("Analyze asset allocations, monitor volatility buckets, and secure customized risk reports.")
+        # Compute metrics if items exist
+        if portfolio_items:
+            df = pd.DataFrame(portfolio_items)
+            total_val = df["Value (USD)"].sum()
+            df["Allocation (%)"] = (df["Value (USD)"] / total_val) * 100
 
-# Fetch prices based on configuration
-mints = [data["mint"] for data in DEFAULT_TOKENS.values()]
-prices_db = fetch_jupiter_prices(mints, api_key=jup_api_key if jup_api_key else None)
+            low_pct = df[df['Risk Profile'] == 'Low']['Allocation (%)'].sum()
+            med_pct = df[df['Risk Profile'] == 'Medium']['Allocation (%)'].sum()
+            high_pct = df[df['Risk Profile'] == 'High']['Allocation (%)'].sum()
+            risk_score = (low_pct * 1 + med_pct * 5 + high_pct * 10) / 10
 
-# Initialize portfolio data
-portfolio_items = []
+            # Charts as JSON
+            fig_assets = px.pie(df, values='Value (USD)', names='Token', hole=0.4,
+                                color_discrete_sequence=px.colors.sequential.Agsunset)
+            chart_assets = json.dumps(fig_assets, cls=plotly.utils.PlotlyJSONEncoder)
 
-if app_mode == "Manual Entry":
-    st.subheader("📝 Customize Your Manual Portfolio")
-    col1, col2 = st.columns(2)
+            risk_grouped = df.groupby('Risk Profile').sum(numeric_only=True).reset_index()
+            fig_risk = px.bar(risk_grouped, x='Risk Profile', y='Value (USD)', color='Risk Profile',
+                              color_discrete_map={'Low': '#4CAF50', 'Medium': '#FF9800', 'High': '#F44336'},
+                              category_orders={'Risk Profile': ['Low', 'Medium', 'High']})
+            chart_risk = json.dumps(fig_risk, cls=plotly.utils.PlotlyJSONEncoder)
 
-    with col1:
-        st.markdown("**Select Assets and Balances**")
-        for token_name, data in DEFAULT_TOKENS.items():
-            # Create input check and balance input side by side
-            c_check, c_amount = st.columns([1, 2])
-            with c_check:
-                is_selected = st.checkbox(token_name, value=(token_name in ["Solana (SOL)", "USD Coin (USDC)"]))
-            with c_amount:
-                amount = st.number_input(f"Amount of {token_name.split(' ')[0]}", min_value=0.0, value=10.0 if is_selected else 0.0, step=1.0, key=f"amt_{token_name}")
+            insights = generate_insights(risk_score, low_pct, med_pct, high_pct)
 
-            if is_selected and amount > 0:
-                price = prices_db.get(data["mint"], data["price_default"])
-                portfolio_items.append({
-                    "Token": token_name,
-                    "Amount": amount,
-                    "Price (USD)": price,
-                    "Value (USD)": amount * price,
-                    "Risk Profile": data["risk"],
-                    "Type": data["type"]
-                })
+            # Convert df to dict for table
+            table_data = df.to_dict(orient='records')
 
-elif app_mode == "Wallet Import (Simulation)":
-    st.subheader("🔑 Import Solana Wallet Address")
-    wallet_address = st.text_input("Enter Solana Wallet Public Address", "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", help="Example uses the Jupiter Treasury address")
+            results = {
+                "total_val": total_val,
+                "risk_score": risk_score,
+                "risk_label": ("High Risk 🔥" if risk_score > 7 else "Moderate Risk ⚖️" if risk_score > 4 else "Low Risk 🛡️"),
+                "largest_holding": df.loc[df['Value (USD)'].idxmax()]['Token'].split(' ')[0],
+                "assets_count": len(df),
+                "chart_assets": chart_assets,
+                "chart_risk": chart_risk,
+                "table_data": table_data,
+                "insights": insights
+            }
 
-    if wallet_address:
-        st.info("💡 Real-time wallet token scraping usually requires a Solana RPC Node. This dashboard is simulating imports using real-time values from Jupiter.")
-        # Generates realistic allocations for the demo run
-        simulated_allocations = {
-            "Solana (SOL)": 500.0,
-            "USD Coin (USDC)": 15000.0,
-            "Jupiter (JUP)": 8000.0,
-            "Pyth Network (PYTH)": 4000.0,
-            "Dogwifhat (WIF)": 150.0
-        }
-        for token_name, amount in simulated_allocations.items():
-            data = DEFAULT_TOKENS[token_name]
-            price = prices_db.get(data["mint"], data["price_default"])
-            portfolio_items.append({
-                "Token": token_name,
-                "Amount": amount,
-                "Price (USD)": price,
-                "Value (USD)": amount * price,
-                "Risk Profile": data["risk"],
-                "Type": data["type"]
-            })
+    return render_template("index.html",
+                           tokens=DEFAULT_TOKENS,
+                           results=results,
+                           error=error,
+                           api_key=api_key,
+                           mode=mode)
 
-# --- DATA PROCESS & RENDERING ---
-if portfolio_items:
-    df = pd.DataFrame(portfolio_items)
-    total_val = df["Value (USD)"].sum()
-    df["Allocation (%)"] = (df["Value (USD)"] / total_val) * 100
-
-    # Calculate Risk Score
-    low_pct = df[df['Risk Profile'] == 'Low']['Allocation (%)'].sum()
-    med_pct = df[df['Risk Profile'] == 'Medium']['Allocation (%)'].sum()
-    high_pct = df[df['Risk Profile'] == 'High']['Allocation (%)'].sum()
-    risk_score = (low_pct * 1 + med_pct * 5 + high_pct * 10) / 10
-
-    # Overview Cards
-    st.markdown("---")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Portfolio Value", f"${total_val:,.2f}")
-
-    # Color-coded risk assessment score
-    if risk_score > 7.0:
-        m2.metric("Aggregate Risk Score", f"{risk_score:.1f} / 10", "High Risk 🔥")
-    elif risk_score > 4.0:
-        m2.metric("Aggregate Risk Score", f"{risk_score:.1f} / 10", "Moderate Risk ⚖️")
-    else:
-        m2.metric("Aggregate Risk Score", f"{risk_score:.1f} / 10", "Low Risk 🛡️")
-
-    m3.metric("Largest Holding", f"{df.loc[df['Value (USD)'].idxmax()]['Token'].split(' ')[0]}")
-    m4.metric("Assets Tracked", f"{len(df)}")
-
-    # Charts Division
-    st.markdown("---")
-    char_col1, char_col2 = st.columns(2)
-
-    with char_col1:
-        st.subheader("📊 Asset Allocation Breakdown")
-        fig_assets = px.pie(
-            df, 
-            values='Value (USD)', 
-            names='Token', 
-            hole=0.4,
-            color_discrete_sequence=px.colors.sequential.Agsunset
-        )
-        fig_assets.update_layout(margin=dict(t=10, b=10, l=10, r=10))
-        st.plotly_chart(fig_assets, use_container_width=True)
-
-    with char_col2:
-        st.subheader("⚠️ Risk Profile Composition")
-        risk_grouped = df.groupby('Risk Profile').sum(numeric_only=True).reset_index()
-        fig_risk = px.bar(
-            risk_grouped,
-            x='Risk Profile',
-            y='Value (USD)',
-            color='Risk Profile',
-            color_discrete_map={'Low': '#4CAF50', 'Medium': '#FF9800', 'High': '#F44336'},
-            category_orders={'Risk Profile': ['Low', 'Medium', 'High']}
-        )
-        fig_risk.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-        st.plotly_chart(fig_risk, use_container_width=True)
-
-    # Data Table View
-    st.subheader("📋 Asset Breakdown details")
-    st.dataframe(
-        df[["Token", "Type", "Amount", "Price (USD)", "Value (USD)", "Allocation (%)", "Risk Profile"]].style.format({
-            "Price (USD)": "${:,.4f}",
-            "Value (USD)": "${:,.2f}",
-            "Allocation (%)": "{:.2f}%"
-        }),
-        use_container_width=True
-    )
-
-    # Interactive AI Assistant Section
-    st.markdown("---")
-    st.subheader("🤖 Smart Portfolio Advisor Insights")
-
-    with st.spinner("Analyzing allocation patterns..."):
-        insights = generate_ai_insights(df, openrouter_key=openrouter_key if openrouter_key else None)
-        st.markdown(insights)
-
-else:
-    st.warning("⚠️ No assets are active. Please select at least one token from the manual selection options or enter a wallet address.")
+# Required for Vercel
+if __name__ == "__main__":
+    app.run(debug=True)
