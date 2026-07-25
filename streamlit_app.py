@@ -72,6 +72,13 @@ def init_db():
                   ("admin", admin_hash, "admin@example.com"))
     else:
         c.execute("UPDATE users SET email='admin@example.com' WHERE username='admin' AND email IS NULL")
+
+    # Guest account for non-authenticated users (no password)
+    c.execute("SELECT COUNT(*) FROM users WHERE username='guest'")
+    if c.fetchone()[0] == 0:
+        c.execute("INSERT INTO users (username, password_hash, email, role) VALUES (?, ?, ?, 'guest')",
+                  ("guest", "", "guest@example.com"))
+
     c.execute('''CREATE TABLE IF NOT EXISTS forex_quotes
                  (timestamp TEXT, pair TEXT, rate REAL)''')
     c.execute('''CREATE TABLE IF NOT EXISTS wallet_transactions
@@ -723,7 +730,7 @@ def fetch_market_sentiment():
     return sentiment_score
 
 # ------------------------------------------------------------------
-# SIDEBAR AUTHENTICATION (NEW)
+# UI HELPERS
 # ------------------------------------------------------------------
 def show_logo():
     st.markdown("""
@@ -741,151 +748,141 @@ def show_logo():
     </div>
     """, unsafe_allow_html=True)
 
-def render_sidebar_auth():
-    """Show login or registration forms inside the sidebar."""
-    st.sidebar.title("🔐 Account")
-    auth_option = st.sidebar.radio("Select", ["Login", "Create Account"], horizontal=True)
-
-    if auth_option == "Login":
-        with st.sidebar.form("login_form_sidebar"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            use_2fa = st.checkbox("Enable 2‑Factor Authentication (OTP)")
-            otp_input = None
-            if use_2fa:
-                otp_input = st.text_input("OTP (sent to your email)")
-            submitted = st.form_submit_button("🔓 Login")
-            if submitted:
-                success, role = authenticate(username, password)
-                if success:
-                    if use_2fa:
-                        if 'otp' not in st.session_state or otp_input != st.session_state.otp:
-                            st.sidebar.error("Invalid OTP. Request a new one if needed.")
-                            st.stop()
-                    st.session_state.authenticated = True
-                    st.session_state.username = username
-                    st.session_state.role = role
-                    st.rerun()
-                else:
-                    st.sidebar.error("Invalid username or password.")
-        # OTP request outside the form
-        if use_2fa and username:
-            if st.sidebar.button("📧 Send OTP"):
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute("SELECT email FROM users WHERE username=?", (username,))
-                row = c.fetchone()
-                if row and row[0]:
-                    send_otp(row[0])
-                    st.sidebar.success("OTP sent to your email.")
-                else:
-                    st.sidebar.warning("User email not found.")
-    else:  # Create Account
-        with st.sidebar.form("register_form_sidebar"):
-            new_username = st.text_input("Choose Username")
-            new_password = st.text_input("Choose Password", type="password")
-            new_email = st.text_input("Email")
-            submitted = st.form_submit_button("🆕 Register")
-            if submitted:
-                if not new_username or not new_password or not new_email:
-                    st.sidebar.error("All fields are required.")
-                else:
-                    success, msg = add_user(new_username, new_password, new_email)
-                    if success:
-                        st.sidebar.success(msg + " You can now login.")
-                    else:
-                        st.sidebar.error(msg)
-
 # ------------------------------------------------------------------
-# SESSION STATE & LOGIN
+# SESSION STATE DEFAULTS
 # ------------------------------------------------------------------
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
-
-if not st.session_state.authenticated:
-    # ---- Sidebar auth ----
-    render_sidebar_auth()
-    # ---- Main area shows a welcome screen ----
-    col1, col2, col3 = st.columns([1,2,1])
-    with col2:
-        show_logo()
-        st.markdown("<h1 style='text-align:center;'>📈 Trading App</h1>", unsafe_allow_html=True)
-        st.markdown("Welcome to the advanced trading dashboard. Please log in via the sidebar to access forex, crypto, and wallet features.")
-    st.stop()
+if "username" not in st.session_state:
+    st.session_state.username = "guest"
+if "role" not in st.session_state:
+    st.session_state.role = "guest"
 
 # ------------------------------------------------------------------
-# REST OF THE APP (AFTER LOGIN)
+# SIDEBAR – ALWAYS VISIBLE, CONDITIONAL AUTH
 # ------------------------------------------------------------------
-def logout():
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-    st.rerun()
-
-# Sidebar after authentication
 with st.sidebar:
     show_logo()
-    st.write(f"👤 {st.session_state.username} ({st.session_state.role})")
+
+    if not st.session_state.authenticated:
+        st.markdown("### 🔐 Account")
+        auth_option = st.radio("Select", ["Login", "Create Account"], horizontal=True)
+
+        if auth_option == "Login":
+            with st.form("login_form_sidebar"):
+                username = st.text_input("Username")
+                password = st.text_input("Password", type="password")
+                use_2fa = st.checkbox("Enable 2‑Factor Authentication (OTP)")
+                otp_input = None
+                if use_2fa:
+                    otp_input = st.text_input("OTP (sent to your email)")
+                submitted = st.form_submit_button("🔓 Login")
+                if submitted:
+                    success, role = authenticate(username, password)
+                    if success:
+                        if use_2fa:
+                            if 'otp' not in st.session_state or otp_input != st.session_state.otp:
+                                st.error("Invalid OTP. Request a new one if needed.")
+                                st.stop()
+                        st.session_state.authenticated = True
+                        st.session_state.username = username
+                        st.session_state.role = role
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password.")
+            if use_2fa and username:
+                if st.button("📧 Send OTP"):
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute("SELECT email FROM users WHERE username=?", (username,))
+                    row = c.fetchone()
+                    if row and row[0]:
+                        send_otp(row[0])
+                        st.success("OTP sent to your email.")
+                    else:
+                        st.warning("User email not found.")
+        else:  # Create Account
+            with st.form("register_form_sidebar"):
+                new_username = st.text_input("Choose Username")
+                new_password = st.text_input("Choose Password", type="password")
+                new_email = st.text_input("Email")
+                submitted = st.form_submit_button("🆕 Register")
+                if submitted:
+                    if not new_username or not new_password or not new_email:
+                        st.error("All fields are required.")
+                    else:
+                        success, msg = add_user(new_username, new_password, new_email)
+                        if success:
+                            st.success(msg + " You can now login.")
+                        else:
+                            st.error(msg)
+    else:
+        # Authenticated user sidebar
+        st.write(f"👤 {st.session_state.username} ({st.session_state.role})")
+
+    # Navigation (always visible, even for guests)
     mode_options = ["📊 Dashboard", "💱 Forex Pro", "🤖 Jup AI", "₿ Crypto Tracker", "📈 Trading", "💳 Mobile Wallet"]
     if 'mode' not in st.session_state:
         st.session_state.mode = mode_options[0]
-    mode = st.radio("🧠 Engine", mode_options, index=mode_options.index(st.session_state.mode))
+    mode = st.radio("🧠 Engine", mode_options, index=mode_options.index(st.session_state.mode), key="nav_mode")
     st.session_state.mode = mode
+
     if mode == "💱 Forex Pro":
+        if 'use_real_forex' not in st.session_state:
+            st.session_state.use_real_forex = True
         st.checkbox("Real‑time forex", value=st.session_state.use_real_forex, key="use_real_forex")
-    with st.expander("⚙️ Account Settings"):
-        new_email = st.text_input("New email", value="")
-        if st.button("Update Email"):
-            if new_email:
-                update_user_email(st.session_state.username, new_email)
-                st.success("Email updated.")
-    if st.session_state.role == "admin":
-        with st.expander("👥 User Management"):
-            st.subheader("Add User")
-            with st.form("admin_add_user"):
-                new_user = st.text_input("Username")
-                new_pass = st.text_input("Password", type="password")
-                new_email = st.text_input("Email")
-                new_role = st.selectbox("Role", ["user", "admin"])
-                if st.form_submit_button("Add User"):
-                    if new_user and new_pass and new_email:
-                        success, msg = add_user(new_user, new_pass, new_email, new_role)
-                        if success:
-                            st.success(msg)
-                        else:
-                            st.error(msg)
-                    else:
-                        st.error("All fields required.")
-            st.subheader("Existing Users")
-            users_df = get_all_users()
-            for idx, row in users_df.iterrows():
-                col1, col2, col3 = st.columns([3,2,1])
-                with col1:
-                    st.write(f"**{row['username']}** ({row['role']})")
-                with col2:
-                    st.write(row['email'])
-                with col3:
-                    if row['username'] != 'admin':
-                        if st.button("🗑️", key=f"del_{row['username']}"):
-                            d_success, d_msg = delete_user(row['username'])
-                            if d_success:
-                                st.success(d_msg)
+
+    if st.session_state.authenticated:
+        with st.expander("⚙️ Account Settings"):
+            new_email = st.text_input("New email", value="")
+            if st.button("Update Email"):
+                if new_email:
+                    update_user_email(st.session_state.username, new_email)
+                    st.success("Email updated.")
+        if st.session_state.role == "admin":
+            with st.expander("👥 User Management"):
+                st.subheader("Add User")
+                with st.form("admin_add_user"):
+                    new_user = st.text_input("Username")
+                    new_pass = st.text_input("Password", type="password")
+                    new_email = st.text_input("Email")
+                    new_role = st.selectbox("Role", ["user", "admin"])
+                    if st.form_submit_button("Add User"):
+                        if new_user and new_pass and new_email:
+                            success, msg = add_user(new_user, new_pass, new_email, new_role)
+                            if success:
+                                st.success(msg)
                             else:
-                                st.error(d_msg)
-                            st.rerun()
-    if st.button("🚪 Logout"):
-        logout()
+                                st.error(msg)
+                        else:
+                            st.error("All fields required.")
+                st.subheader("Existing Users")
+                users_df = get_all_users()
+                for idx, row in users_df.iterrows():
+                    col1, col2, col3 = st.columns([3,2,1])
+                    with col1:
+                        st.write(f"**{row['username']}** ({row['role']})")
+                    with col2:
+                        st.write(row['email'])
+                    with col3:
+                        if row['username'] != 'admin' and row['username'] != 'guest':
+                            if st.button("🗑️", key=f"del_{row['username']}"):
+                                d_success, d_msg = delete_user(row['username'])
+                                if d_success:
+                                    st.success(d_msg)
+                                else:
+                                    st.error(d_msg)
+                                st.rerun()
+        if st.button("🚪 Logout"):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
+
     st.caption("v12 · PWA Ready")
 
 # ------------------------------------------------------------------
-# DATA INIT (after login)
+# DATA INIT (for all users)
 # ------------------------------------------------------------------
-if 'role' not in st.session_state:
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT role FROM users WHERE username=?", (st.session_state.username,))
-    row = c.fetchone()
-    st.session_state.role = row[0] if row else "user"
-
 if 'forex_data' not in st.session_state:
     st.session_state.forex_data = ForexEngine.get_live_data(use_real=True)
 if 'forex_volume' not in st.session_state:
@@ -905,14 +902,16 @@ if 'crypto_daily_hist' not in st.session_state:
                     live_dict[cid] = row["Price (USD)"]
     st.session_state.crypto_daily_hist = CryptoForecast.generate_daily_history(90, live_dict)
 
-# Check stop‑loss / take‑profit and alerts at every rerun
+# Check stop‑loss / take‑profit and alerts for current user
 TradingModule.check_stop_loss_take_profit(st.session_state.username)
 check_price_alerts(st.session_state.username)
 
 # ------------------------------------------------------------------
 # UI THEME
 # ------------------------------------------------------------------
-theme = st.sidebar.radio("🎨 Theme", ["dark", "light"], horizontal=True, index=0 if st.session_state.get("theme","dark")=="dark" else 1)
+theme = st.sidebar.radio("🎨 Theme", ["dark", "light"], horizontal=True,
+                         index=0 if st.session_state.get("theme","dark")=="dark" else 1,
+                         key="theme_radio")
 st.session_state.theme = theme
 
 if theme == "light":
@@ -935,7 +934,7 @@ st.markdown(f"""
 </style>""", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------
-# DASHBOARD
+# MAIN CONTENT (always visible)
 # ------------------------------------------------------------------
 if mode == "📊 Dashboard":
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
@@ -960,9 +959,6 @@ if mode == "📊 Dashboard":
         st.dataframe(crypto_df, use_container_width=True, hide_index=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ------------------------------------------------------------------
-# FOREX PRO
-# ------------------------------------------------------------------
 elif mode == "💱 Forex Pro":
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
     st.subheader("💹 Forex Pro")
@@ -991,9 +987,6 @@ elif mode == "💱 Forex Pro":
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ------------------------------------------------------------------
-# CRYPTO TRACKER
-# ------------------------------------------------------------------
 elif mode == "₿ Crypto Tracker":
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
     st.subheader("₿ Live Crypto Prices")
@@ -1026,9 +1019,6 @@ elif mode == "₿ Crypto Tracker":
         st.metric("Estimated Earnings", f"${earnings:,.2f}")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ------------------------------------------------------------------
-# JUP AI
-# ------------------------------------------------------------------
 elif mode == "🤖 Jup AI":
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
     st.subheader("🤖 Jup AI · Trading Intelligence")
@@ -1075,9 +1065,6 @@ elif mode == "🤖 Jup AI":
                 st.markdown(f"### Decision: **{decision}**")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ------------------------------------------------------------------
-# TRADING
-# ------------------------------------------------------------------
 elif mode == "📈 Trading":
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
     st.subheader("📈 Virtual Trading Terminal")
@@ -1185,9 +1172,6 @@ elif mode == "📈 Trading":
         st.dataframe(history[['symbol','trade_type','open_price','close_price','amount','leverage','pnl','status','timestamp']], use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ------------------------------------------------------------------
-# MOBILE WALLET
-# ------------------------------------------------------------------
 elif mode == "💳 Mobile Wallet":
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
     st.subheader("💳 Mobile Wallet")
