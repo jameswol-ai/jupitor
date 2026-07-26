@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "242503543177",
+    "project_id": "jupiter-e5fa8",
+    "storage_bucket": "jupiter-e5fa8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:242503543177:android:8d84b4ad67d6b672d4d958",
+        "android_client_info": {
+          "package_name": "Trading.Assistant"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDdBgkB9m7_p8ZfTyOcyZLdtx_wbzV-gYc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
