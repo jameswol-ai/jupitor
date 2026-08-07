@@ -6,11 +6,19 @@
     <title>Trading App</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body, html { height: 100%; overflow: hidden; }
-        iframe { width: 100%; height: 100%; border: none; display: block; }
+        body, html { height: 100%; overflow: hidden; background: #0a0a1a; }
+        iframe { width: 100%; height: 100%; border: none; }
+        /* Fallback if iframe fails */
+        .fallback {
+            color: white;
+            text-align: center;
+            padding-top: 20vh;
+            font-family: Arial, sans-serif;
+        }
     </style>
 </head>
 <body>
-    <iframe src="https://yourusername-your-app.streamlit.app" allowfullscreen></iframe>
+    <iframe src="https://YOUR_APP_URL.streamlit.app" allowfullscreen></iframe>
+    <!-- Replace YOUR_APP_URL with your actual Streamlit Cloud URL -->
 </body>
 </html>
