@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Trading App</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #0a0a1a; color: #e0e0e0; margin:0; display:flex; }
+        .sidebar { width:260px; background: rgba(20,20,40,0.9); padding:20px; height:100vh; position:fixed; overflow-y:auto; border-right:1px solid #333; }
+        .main { margin-left:260px; padding:30px; flex:1; }
+        .card { background: rgba(255,255,255,0.05); border-radius:16px; padding:20px; margin-bottom:20px; border:1px solid rgba(255,255,255,0.1); }
+        .metric-box { background: rgba(255,255,255,0.1); border-radius:12px; padding:16px; text-align:center; margin:10px; }
+        .metrics-row { display:flex; flex-wrap:wrap; justify-content:center; }
+        button, select, input { background: #1e1e2f; color: white; border:1px solid #444; padding:10px; border-radius:6px; margin:4px 0; }
+        .btn { background: linear-gradient(45deg, #ff416c, #ff4b2b); border:none; cursor:pointer; font-weight:bold; }
+        .btn:hover { opacity:0.9; }
+        a { color:#00d2ff; text-decoration:none; }
+        table { width:100%; border-collapse:collapse; margin-top:10px; }
+        th, td { padding:10px; border-bottom:1px solid #333; text-align:right; }
+    </style>
+</head>
+<body>
+<div class="sidebar">
+    <h2>📈 Trading App</h2>
+    <p>👤 {{ username }}</p>
+    <hr>
+    <a href="?mode=dashboard&user={{ username }}">📊 Dashboard</a><br>
+    <a href="?mode=forex&user={{ username }}">💱 Forex Pro</a><br>
+    <a href="?mode=ai&user={{ username }}&pair=EUR/USD">🤖 Jup AI</a><br>
+    <a href="?mode=crypto&user={{ username }}">₿ Crypto Tracker</a><br>
+    <a href="?mode=trading&user={{ username }}">📈 Trading</a><br>
+    <a href="?mode=wallet&user={{ username }}">💳 Wallet</a><br>
+    <hr>
+    <small>v12 · PWA Ready</small>
+</div>
+
+<div class="main">
+    {% if mode == 'dashboard' %}
+    <div class="card">
+        <h2>Dashboard Overview</h2>
+        <div class="metrics-row">
+            <div class="metric-box">Wallet Balance<br><b>${{ "%.2f"|format(balance) }}</b></div>
+            <div class="metric-box">Top Forex<br><b>EUR/USD</b> {{ forex_rates.get('EUR/USD','') }}</div>
+            <div class="metric-box">Top Crypto<br><b>{% if crypto_prices %}{{ crypto_prices[0].Coin }} {{ crypto_prices[0].Price }}{% endif %}</b></div>
+        </div>
+        {% if chart_forex %}
+        <div id="chart_forex"></div>
+        <script>Plotly.newPlot('chart_forex', {{ chart_forex|safe }}.data, {{ chart_forex|safe }}.layout);</script>
+        {% endif %}
+    </div>
+
+    {% elif mode == 'forex' %}
+    <div class="card">
+        <h2>Forex Pro</h2>
+        <div class="metrics-row">
+            {% for pair, rate in forex_rates.items() %}
+            <div class="metric-box">{{ pair }}<br><b>${{ rate }}</b></div>
+            {% endfor %}
+        </div>
+        <div id="chart_forex"></div>
+        <script>Plotly.newPlot('chart_forex', {{ chart_forex|safe }}.data, {{ chart_forex|safe }}.layout);</script>
+    </div>
+
+    {% elif mode == 'ai' %}
+    <div class="card">
+        <h2>Jup AI Signals</h2>
+        <form>
+            <select name="pair" onchange="this.form.submit()">
+                {% for p in pairs %}<option {% if request.args.pair==p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+            </select>
+        </form>
+        <ul>
+        {% for sig in signals %}
+            <li><strong>{{ sig[0] }}</strong>: {{ sig[1] }}</li>
+        {% endfor %}
+        </ul>
+    </div>
+
+    {% elif mode == 'crypto' %}
+    <div class="card">
+        <h2>Crypto Prices</h2>
+        {% if crypto_prices %}
+        <table>
+            <tr><th>Coin</th><th>Price (USD)</th><th>24h Change</th></tr>
+            {% for c in crypto_prices %}
+            <tr><td>{{ c.Coin }}</td><td>${{ "%.2f"|format(c.Price) }}</td><td style="color:{% if c.Change>=0 %}green{% else %}red{% endif %}">{{ c.Change }}%</td></tr>
+            {% endfor %}
+        </table>
+        {% endif %}
+        <div id="chart_crypto"></div>
+        <script>Plotly.newPlot('chart_crypto', {{ chart_crypto|safe }}.data, {{ chart_crypto|safe }}.layout);</script>
+    </div>
+
+    {% elif mode == 'trading' %}
+    <div class="card">
+        <h2>Virtual Trading</h2>
+        <p>Balance: ${{ "%.2f"|format(balance) }}</p>
+        <h3>New Trade</h3>
+        <form method="post">
+            <input type="hidden" name="action" value="trade">
+            <select name="symbol">
+                {% for p in pairs %}<option>{{ p }}</option>{% endfor %}
+                {% for c in coins %}<option>{{ coin_names[c] }}</option>{% endfor %}
+            </select>
+            <select name="type"><option>buy</option><option>sell</option></select>
+            Amount: <input type="number" step="0.01" name="amount" value="1">
+            Price: <input type="number" step="0.0001" name="price" value="1">
+            Leverage: <input type="number" name="leverage" value="1">
+            SL: <input type="number" step="0.01" name="sl" placeholder="optional">
+            TP: <input type="number" step="0.01" name="tp" placeholder="optional">
+            <button class="btn" type="submit">Execute</button>
+        </form>
+        <h3>Open Positions</h3>
+        <table>
+            <tr><th>Symbol</th><th>Type</th><th>Open Price</th><th>Amount</th><th>Leverage</th><th>SL/TP</th><th>Action</th></tr>
+            {% for t in open_positions %}
+            <tr>
+                <td>{{ t.symbol }}</td><td>{{ t.type }}</td><td>{{ t.open_price }}</td><td>{{ t.amount }}</td>
+                <td>{{ t.leverage }}</td><td>{{ t.sl }}/{{ t.tp }}</td>
+                <td><form method="post"><input type="hidden" name="action" value="close"><input type="hidden" name="trade_id" value="{{ t.id }}">Close Price: <input type="number" step="0.0001" name="close_price"><button class="btn" type="submit">Close</button></form></td>
+            </tr>
+            {% endfor %}
+        </table>
+        <h3>Trade History</h3>
+        <table>
+            <tr><th>Symbol</th><th>Type</th><th>Open</th><th>Close</th><th>P&L</th></tr>
+            {% for t in trade_history %}
+            <tr><td>{{ t.symbol }}</td><td>{{ t.type }}</td><td>{{ t.open_price }}</td><td>{{ t.close_price }}</td><td>${{ "%.2f"|format(t.pnl) }}</td></tr>
+            {% endfor %}
+        </table>
+    </div>
+
+    {% elif mode == 'wallet' %}
+    <div class="card">
+        <h2>Mobile Wallet</h2>
+        <p>Balance: ${{ "%.2f"|format(balance) }}</p>
+        <h4>Deposit (simulated)</h4>
+        <form method="post"><input type="hidden" name="action" value="deposit"><input type="number" name="amount" placeholder="Amount"><button class="btn">Add Funds</button></form>
+        <h4>Withdraw</h4>
+        <form method="post"><input type="hidden" name="action" value="withdraw"><input type="number" name="amount" placeholder="Amount"><button class="btn">Withdraw</button></form>
+    </div>
+    {% endif %}
+</div>
+</body>
+</html>
