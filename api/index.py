@@ -4,4 +4,4 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "OK"
+    return "Hello world! Flask is running on Vercel."
