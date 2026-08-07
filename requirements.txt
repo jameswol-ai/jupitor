@@ -1,5 +1,1 @@
 Flask
-pandas
-numpy
-requests
-plotly
