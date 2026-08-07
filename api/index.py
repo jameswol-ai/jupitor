@@ -6,6 +6,6 @@ app = Flask(__name__)
 def home():
     return "Hello from Flask"
 
-@app.route("/api/index")
+@app.route("/api/index.py")
 def api_route():
     return "API route works"
