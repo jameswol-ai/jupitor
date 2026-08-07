@@ -1,4 +1,6 @@
-Flask
+streamlit
 pandas
+numpy
 requests
-plotly
+feedparser
+streamlit-autorefresh
